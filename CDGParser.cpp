@@ -255,8 +255,9 @@ public:
 		return NULL;
 	}
 
-	static void *ReadCDG(CDGFileIO *obj)
+	static void *ReadCDG(void *ptr)
 	{
+		CDGFileIO *obj = static_cast<CDGFileIO *>(ptr);
 		if ((obj == NULL) || (obj->cdg_file == NULL))
 		{
 			if (obj)
@@ -327,11 +328,14 @@ private:
 	CDGScreenHandler::Screen screen;
 	CDGScreenHandler *handler;
 	AudioPlayer *ap;
+	pthread_t thread;
+	bool worker_thread_valid;
+
 public:
 	MyCDGParser(char *filename, CDGScreenHandler *h);
 	~MyCDGParser();	
-	void Start();
-	bool PrintNext();
+	bool Start();
+	bool WaitUntilDone();
 	void MemoryPreset(const SubCode *s);
 	void BorderPreset(const SubCode *s);
 	void TileBlockNormal(const SubCode *s);
@@ -341,7 +345,7 @@ public:
 	void LoadColorTableLo(const SubCode *s);
 	void LoadColorTableHi(const SubCode *s);
 	void TileBlockXor(const SubCode *s);
-	static void *DoParse(MyCDGParser *obj);
+	static void *DoParse(void *obj);
 };
 
 
@@ -358,21 +362,32 @@ MyCDGParser::~MyCDGParser()
 		delete ap;
 */}
 
-void MyCDGParser::Start()
+bool MyCDGParser::Start()
 {
-	pthread_t thread;
-
 	if ((cdg_file == NULL) || (handler == NULL) || (cdg_file->Done()))
-		return;
+		return false;
 
 	if (!cdg_file->Start())
-		return;
+		return false;
 
 	if (pthread_create(&thread, NULL, DoParse, (void *)this))
-		return;
+		return false;
 
+	worker_thread_valid = true;
+	return true;
 	//void *status;
 	//pthread_join(thread, &status);
+}
+
+bool MyCDGParser::WaitUntilDone()
+{
+	void *status;
+	if (worker_thread_valid)
+	{
+		pthread_join(thread, &status);
+		worker_thread_valid = false;
+	}
+	return true;
 }
 
 /*
@@ -391,8 +406,9 @@ unsigned long time_diff(timespec start, timespec end)
 	return temp.tv_sec * 1000000 + (temp.tv_nsec/1000);
 }
 
-static void * MyCDGParser::DoParse(MyCDGParser *obj)
+void * MyCDGParser::DoParse(void *ptr)
 { 
+	MyCDGParser *obj = static_cast<MyCDGParser *>(ptr);
 	const SubCode *s;
 	const int USEC_IN_MS = 1000;
 	struct timespec begin, start, end;
@@ -627,6 +643,7 @@ void MyCDGParser::DefTransparentColor(const SubCode *s)
 
 MyCDGParser::MyCDGParser(char *filename, CDGScreenHandler *h)
 {
+	worker_thread_valid = false;
 	if (filename == NULL)
 	{
 		cdg_file = NULL;

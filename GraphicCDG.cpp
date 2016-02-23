@@ -35,7 +35,7 @@ public:
 	void InitColors(const unsigned short colors[])
 	{
 		for (int i = 0; i < MAX_COLORS; i++)
-			screen_colors[i] = colors[i];
+			screen_colors[i] = (colors[i] << 4) | 0x000F;
 	}
 
 	void Display(const Screen *s)
@@ -44,10 +44,7 @@ public:
 		{
 			int gl_y = HEIGHT - i - 1;
 			for (int j = 0; j < WIDTH; j++)
-			{
-				unsigned int col = (*s)[i][j];
-				screen[gl_y][j] = (screen_colors[col] << 4) | 0x000F;
-			}
+				screen[gl_y][j] = screen_colors[(*s)[i][j]];
 		}
 		//glutPostRedisplay();
 	}

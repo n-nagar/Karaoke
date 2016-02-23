@@ -18,6 +18,7 @@ public:
 class CDGParser
 {
 public:
-	virtual void Start() = 0;
+	virtual bool Start() = 0;
+	virtual bool WaitUntilDone() = 0;
 	static CDGParser *GetParser(char *filename, CDGScreenHandler* handler);
 };
