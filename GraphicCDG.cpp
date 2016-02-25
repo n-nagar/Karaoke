@@ -10,14 +10,22 @@ void *RefreshScreen(GLFWwindow *win)
 {
 	glDrawPixels(CDGScreenHandler::WIDTH, CDGScreenHandler::HEIGHT, GL_RGBA, 
                 GL_UNSIGNED_SHORT_4_4_4_4, screen_buffer);
-	//glFlush();
 	glfwSwapBuffers(win);
 }
 
 void ResizeScreen(GLFWwindow *window, int width, int height)
 {
-	//fprintf(stderr, "Resize[%d][%d]\n", height, width );
+	if ((width < CDGScreenHandler::WIDTH) || (height < CDGScreenHandler::HEIGHT))
+	{
+		glfwSetWindowSize(window, CDGScreenHandler::WIDTH, CDGScreenHandler::HEIGHT);
+		return;
+	}
+	GLfloat aspect = (GLfloat)width/(GLfloat)height;
   	glViewport(0, 0, width, height);
+  	glMatrixMode(GL_PROJECTION);
+  	glLoadIdentity();
+  	glOrtho(0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f);
+  	glMatrixMode(GL_MODELVIEW);
 }
 
 class GraphicsDisplay : public CDGScreenHandler
@@ -43,6 +51,9 @@ public:
 		glfwSetWindowRefreshCallback(window, (GLFWwindowrefreshfun)RefreshScreen);
 		glfwSetWindowSizeCallback(window, (GLFWwindowsizefun)ResizeScreen);
 		screen_buffer = new GLushort[HEIGHT * WIDTH];
+		if (screen_buffer == NULL)
+			return;
+		memset(screen_buffer, 0, sizeof(GLushort) * HEIGHT * WIDTH);
 		glfwMakeContextCurrent(window);
 	}
 
