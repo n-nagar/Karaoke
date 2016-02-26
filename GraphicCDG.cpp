@@ -1,16 +1,34 @@
-#include "CDGParser.h"
+#include "Karaoke.h"
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <cstring>
 #include <cstdio>
 
 GLushort *screen_buffer;
+GLuint k_tex;
+int cur_height = CDGScreenHandler::HEIGHT, cur_width = CDGScreenHandler::WIDTH;
 
 void *RefreshScreen(GLFWwindow *win)
 {
-	glDrawPixels(CDGScreenHandler::WIDTH, CDGScreenHandler::HEIGHT, GL_RGBA, 
-                GL_UNSIGNED_SHORT_4_4_4_4, screen_buffer);
+  	glViewport(0, 0, cur_width, cur_height);
+  	glMatrixMode(GL_PROJECTION);
+  	glLoadIdentity();
+  	glOrtho(0.0f, cur_width, 0.0f, cur_height, 0.0f, 1.0f);
+	glEnable(GL_TEXTURE_RECTANGLE);
+	glTexImage2D(GL_TEXTURE_RECTANGLE, 0, GL_RGBA4, CDGScreenHandler::WIDTH, CDGScreenHandler::HEIGHT, 0, GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, screen_buffer);
+	glBegin(GL_QUADS);
+	glTexCoord2f(0, 0);
+	glVertex2f(0,0);
+	glTexCoord2f(CDGScreenHandler::WIDTH, 0);
+	glVertex2f(cur_width, 0);
+	glTexCoord2f(CDGScreenHandler::WIDTH,CDGScreenHandler::HEIGHT);
+	glVertex2f(cur_width, cur_height);
+	glTexCoord2f(0, CDGScreenHandler::HEIGHT);
+	glVertex2f(0, cur_height);
+	glEnd();
+	glFlush();
 	glfwSwapBuffers(win);
+  	glMatrixMode(GL_MODELVIEW);
 }
 
 void ResizeScreen(GLFWwindow *window, int width, int height)
@@ -20,11 +38,14 @@ void ResizeScreen(GLFWwindow *window, int width, int height)
 		glfwSetWindowSize(window, CDGScreenHandler::WIDTH, CDGScreenHandler::HEIGHT);
 		return;
 	}
+	cur_width = width;
+	cur_height = height;
+
 	GLfloat aspect = (GLfloat)width/(GLfloat)height;
   	glViewport(0, 0, width, height);
   	glMatrixMode(GL_PROJECTION);
   	glLoadIdentity();
-  	glOrtho(0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f);
+  	glOrtho(0.0f, width, 0.0f, height, 0.0f, 1.0f);
   	glMatrixMode(GL_MODELVIEW);
 }
 
@@ -36,17 +57,13 @@ private:
 	unsigned short screen_colors[MAX_COLORS];
 
 public:
-	GraphicsDisplay(int *argc, char **argv)
+	GraphicsDisplay(char *filename)
 	{
 		window = NULL;
 		screen_buffer = NULL;
-		if (*argc < 2)
-			return;
-		song_path = new char[strlen(argv[1])+1];
-		strcpy(song_path, argv[1]);
 		if (!glfwInit())
 			return;
-		if ((window = glfwCreateWindow(WIDTH, HEIGHT, argv[1], NULL, NULL)) == NULL)
+		if ((window = glfwCreateWindow(WIDTH, HEIGHT, filename, NULL, NULL)) == NULL)
 			return;
 		glfwSetWindowRefreshCallback(window, (GLFWwindowrefreshfun)RefreshScreen);
 		glfwSetWindowSizeCallback(window, (GLFWwindowsizefun)ResizeScreen);
@@ -55,6 +72,12 @@ public:
 			return;
 		memset(screen_buffer, 0, sizeof(GLushort) * HEIGHT * WIDTH);
 		glfwMakeContextCurrent(window);
+
+		glDepthMask(false);
+		glGenTextures(1, &k_tex);
+		glBindTexture(GL_TEXTURE_RECTANGLE, k_tex);
+		glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	}
 
 	~GraphicsDisplay()
@@ -86,34 +109,73 @@ public:
 
 	void MainLoop()
 	{		
-		CDGParser *c;
-
 		if (!window)
 			return;
-		c = CDGParser::GetParser(song_path, this);
-		c->Start();
 		while (!glfwWindowShouldClose(window))
 		{
 			glfwWaitEvents();
 			RefreshScreen(window);
 		}
-		delete c;
 	}
 
 };
 
 int main(int argc, char *argv[])	
 {
-	if (argc > 1)
+
+	if (argc == 2)
 	{
-		GraphicsDisplay *gd = new GraphicsDisplay(&argc, argv);
+		char *cdg_name = new char[strlen(argv[1]) + 4];
+		char *mp3_name = new char[strlen(argv[1]) + 4];
+		CDGParser *c;
+
+
+
+		sprintf(cdg_name, "%s.cdg", argv[1]);
+		sprintf(mp3_name, "%s.mp3", argv[1]);
+
+		CDGReader *rdr = CDGReader::GetReader(cdg_name);
+		if (rdr == NULL)
+		{
+			std::cerr << "Cannot create File Reader\n";
+			return -1;			
+		}
+
+		KaraokeAudio *player = KaraokeAudio::GetPlayer(mp3_name);
+		if (player == NULL)
+		{
+			std::cerr << "Cannot create FMOD Audio\n";
+			delete rdr;
+			return -1;						
+		}
+		GraphicsDisplay *gd = new GraphicsDisplay(argv[1]);
 		if (gd == NULL)
 		{
 			std::cerr << "Cannot create GraphicsDisplay\n";
+			delete rdr;
+			delete player;
 			return -1;
 		}
+
+		CDGParser *parser = CDGParser::GetParser(gd, player, rdr);
+		if (parser == NULL)
+		{
+			delete gd;
+			delete player;
+			delete rdr;
+			std::cerr << "Cannot create CDG Parser\n";
+			return -1;
+		}
+
+		parser->Start();
 		gd->MainLoop();
+
+		delete parser;
+		delete player;
+		delete rdr;
 		delete gd;
 	}
+	else
+		std::cerr << "Usage: " << argv[0]  << " <base file>\n";
 	return 0;
 }

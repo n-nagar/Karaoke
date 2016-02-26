@@ -1,15 +1,12 @@
-#include "CDGParser.h"
+#include "Karaoke.h"
 #include <pthread.h>
 #include <semaphore.h>
 #include <iostream>
-#include <fstream>
 #include <unistd.h>
 #include <sstream>
 #include <iomanip>
 #include <cstring>
 #include <time.h>
-#include "fmod.hpp"
-#include "fmod_errors.h"
 
 
 /*
@@ -19,292 +16,8 @@
 ** Code by Niranjan Nagar
 */
 
-struct SubCode
-{
-	unsigned char command;
-	unsigned char instruction;
-	unsigned char parityQ[2];
-	unsigned char data[16];
-	unsigned char parityP[4];
-};
 
-class AudioPlayer
-{
-private:
-	FMOD::System 	*fmod_system;
-	FMOD::Sound		*karaoke;
-	FMOD::Channel	*channel;
-	FMOD_RESULT		result;
-	unsigned int	version;
-	void			*extradriverdata ;
-public:
-	AudioPlayer(const char *filename)
-	{
-		channel = 0;
-		result = FMOD::System_Create(&fmod_system);
-		if (result != FMOD_OK)
-		{
-			fprintf(stderr, "FMOD did not initialize: (%d) - %s\n", result, FMOD_ErrorString(result));
-			fmod_system = NULL;
-			return;
-		}
-		extradriverdata = NULL;
-		result = fmod_system->init(32, FMOD_INIT_NORMAL, extradriverdata);
-		if (result != FMOD_OK)
-		{
-			fprintf(stderr, "FMOD System did not initialize: (%d) - %s\n", result, FMOD_ErrorString(result));
-			fmod_system = NULL;
-			return;
-		}
-		result = fmod_system->createStream(filename, FMOD_2D, 0, &karaoke);
-		if (result != FMOD_OK)
-		{
-			fprintf(stderr, "Cannot create audio stream: (%d) - %s\n", result, FMOD_ErrorString(result));
-			fmod_system = NULL;
-			karaoke = NULL;
-			return;
-		}
-	}
 
-	~AudioPlayer()
-	{
-		if (karaoke)
-			karaoke->release();
-		if (fmod_system)
-		{
-			fmod_system->close();
-			fmod_system->release();
-		}
-	}
-
-	void Play()
-	{
-		if (fmod_system && karaoke)
-			fmod_system->playSound(karaoke, 0, false, &channel);
-		else
-			fprintf(stderr, "Nothing to play in AudioPlayer::Play\n");
-	}
-
-	unsigned int GetPlayPosition()
-	{
-		unsigned int ret;
-		if (channel)
-		{
-			result = channel->getPosition(&ret, FMOD_TIMEUNIT_MS);
-			if (result != FMOD_OK)
-			{
-				fprintf(stderr, "Error in getting play position: (%d) - %s\n", result, FMOD_ErrorString(result));
-				ret = 0;
-			}
-		}
-		return ret;
-	}
-
-	void Update()
-	{
-		if (fmod_system)
-			fmod_system->update();
-	}
-};
-
-class CDGFileIO
-{
-private:
-	enum BufState {
-		EMPTY, READY, READING
-	};
-	static const int max_packets = 300;
-	struct Buffer {
-		SubCode buf[max_packets];
-		int ready_count;
-		BufState state;
-	};
-	std::fstream *cdg_file;
-	Buffer *buffers[2];
-	int cur_buf;
-	int read_ptr;
-	pthread_t thread;
-	bool thread_dead;
-	sem_t ready_buffers;
-	sem_t read_next_packet;
-	pthread_mutex_t safety;
-public:
-	bool Done()
-	{
-		if (thread_dead)
-			return true;
-		if (cdg_file && (cdg_file->eof() || (cdg_file->fail())))
-			return true;
-		return false;
-	}
-	CDGFileIO(const char *filename)
-	{
-		thread = 0;
-		read_ptr = 0;
-		thread_dead = false;
-		buffers[0] = buffers[1] = NULL;
-		cur_buf = 0;
-
-		cdg_file = new std::fstream(filename, std::ios_base::in | std::ios_base::binary);
-		if (cdg_file == NULL)
-		{
-			std::cerr << "Cannot open CDG file\n";
-			return;
-		}
-		if (sem_init(&ready_buffers, 0, 0))
-		{
-			cdg_file->close();
-			cdg_file = NULL;
-			std::cerr << "Cannot create a semaphore variable\n";
-			return;
-		}
-		if (sem_init(&read_next_packet, 0, 1))
-		{
-			sem_destroy(&ready_buffers);
-			cdg_file->close();
-			cdg_file = NULL;
-			std::cerr << "Cannot create a semaphore variable\n";
-			return;			
-		}
-
-		if (pthread_mutex_init(&safety, NULL))
-		{
-			sem_destroy(&ready_buffers);
-			sem_destroy(&read_next_packet);
-			cdg_file->close();
-			cdg_file = NULL;
-			std::cerr << "Cannot create a mutex variable\n";
-			return;						
-		}
-
-		buffers[0] = new Buffer();
-		buffers[1] = new Buffer();
-		if (!buffers[0] || !buffers[1])
-		{
-			std::cerr << "Failed memory alocation for buffers\n";
-			if (buffers[0])
-				delete buffers[0];
-			if (buffers[1])
-				delete buffers[1];
-			buffers[0] = buffers[1] = NULL;
-			sem_destroy(&ready_buffers);
-			sem_destroy(&read_next_packet);
-			pthread_mutex_destroy(&safety);
-			cdg_file->close();
-			cdg_file = NULL;
-		}
-		int cur_buffer = 0;
-		buffers[0]->ready_count = 0;
-		buffers[0]->state = EMPTY;
-		buffers[1]->ready_count = 0;
-		buffers[1]->state = EMPTY;
-	}
-
-	~CDGFileIO()
-	{
-		sem_destroy(&ready_buffers);
-		sem_destroy(&read_next_packet);
-		pthread_cancel(thread);
-		if (cdg_file != NULL)
-			cdg_file->close();
-		delete buffers[0];
-		delete buffers[1];
-	}
-
-	bool Start()
-	{
-		if (pthread_create(&thread, NULL, ReadCDG, (void *)this)) {
-			std::cerr << "CDGFileIO::Start - Failed thread\n";
-			thread_dead = true;
-			return false;
-		}
-		return true;
-	}
-
-	const SubCode *ReadNext()
-	{
-		if (thread_dead)
-			return NULL;
-		if (buffers[cur_buf]->state == READING)
-		{
-			if (read_ptr < buffers[cur_buf]->ready_count)
-				return &(buffers[cur_buf]->buf[read_ptr++]);
-			if (pthread_mutex_lock(&safety))
-				return NULL;
-			read_ptr = 0;
-			buffers[cur_buf]->state = EMPTY;
-			cur_buf = (cur_buf + 1) % 2;
-			pthread_mutex_unlock(&safety);
-		}
-		if (buffers[cur_buf]->state != READY)
-		{
-			if (thread_dead)
-				return NULL;
-			//std::cerr << "Waiting for read\n";
-			if (sem_wait(&ready_buffers))
-				return NULL;
-			//std::cerr << "Done reading\n";
-			if (buffers[cur_buf]->state != READY)
-				return NULL;
-		}
-		read_ptr = 0;
-		buffers[cur_buf]->state = READING;
-		sem_post(&read_next_packet);
-		if (read_ptr < buffers[cur_buf]->ready_count)
-			return &(buffers[cur_buf]->buf[read_ptr++]);
-		return NULL;
-	}
-
-	static void *ReadCDG(void *ptr)
-	{
-		CDGFileIO *obj = static_cast<CDGFileIO *>(ptr);
-		if ((obj == NULL) || (obj->cdg_file == NULL))
-		{
-			if (obj)
-				obj->thread_dead = true;
-			pthread_exit(NULL);
-		}
-		int cur_buf = 0;
-		while (!obj->cdg_file->eof())
-		{
-			if (pthread_mutex_lock(&(obj->safety)))
-			{
-				obj->thread_dead = true;
-				pthread_exit(NULL);
-			}
-			if (obj->buffers[cur_buf]->state != EMPTY)
-			{
-				pthread_mutex_unlock(&(obj->safety));
-				if (sem_wait(&(obj->read_next_packet)))
-				{
-					obj->thread_dead = true;
-					pthread_exit(NULL);
-				}
-				if (obj->buffers[cur_buf]->state != EMPTY)
-					continue;
-			}
-			else
-				pthread_mutex_unlock(&(obj->safety));
-
-			obj->cdg_file->read((char *)&(obj->buffers[cur_buf]->buf), CDGFileIO::max_packets * sizeof(SubCode));
-			unsigned long size = obj->cdg_file->gcount();
-			if (obj->cdg_file->bad())
-			{
-				obj->buffers[cur_buf]->ready_count = 0;
-				sem_post(&(obj->ready_buffers));
-				obj->thread_dead = true;
-				pthread_exit(NULL);
-			}
-			if (size % sizeof(SubCode))
-				std::cerr << "CDG file has incomplete packet\n";
-			obj->buffers[cur_buf]->ready_count = size / sizeof(SubCode);
-			obj->buffers[cur_buf]->state = READY;
-			cur_buf = (cur_buf + 1) % 2;
-			sem_post(&(obj->ready_buffers));
-		}
-	}
-
-};
 
 enum CDG_INSTRUCTIONS 
 {  
@@ -323,16 +36,16 @@ enum CDG_INSTRUCTIONS
 class MyCDGParser : public CDGParser
 {
 private:
-	CDGFileIO *cdg_file;
+	CDGReader *cdg_file;
 	unsigned short colors[16];
 	CDGScreenHandler::Screen screen;
 	CDGScreenHandler *handler;
-	AudioPlayer *ap;
+	KaraokeAudio *ap;
 	pthread_t thread;
 	bool worker_thread_valid;
 
 public:
-	MyCDGParser(char *filename, CDGScreenHandler *h);
+	MyCDGParser(CDGScreenHandler *h, KaraokeAudio *player, CDGReader *rdr);
 	~MyCDGParser();	
 	bool Start();
 	bool WaitUntilDone();
@@ -349,18 +62,10 @@ public:
 };
 
 
-CDGParser *CDGParser::GetParser(char *filename, CDGScreenHandler* h)
-{
-	return new MyCDGParser(filename, h);
-}
-
 MyCDGParser::~MyCDGParser()
 {
-	if (cdg_file)
-		delete cdg_file;
-/*	if (ap)
-		delete ap;
-*/}
+
+}
 
 bool MyCDGParser::Start()
 {
@@ -641,25 +346,19 @@ void MyCDGParser::DefTransparentColor(const SubCode *s)
 	return;
 }
 
-MyCDGParser::MyCDGParser(char *filename, CDGScreenHandler *h)
+MyCDGParser::MyCDGParser(CDGScreenHandler *h, KaraokeAudio *player, CDGReader *rdr)
 {
 	worker_thread_valid = false;
-	if (filename == NULL)
-	{
-		cdg_file = NULL;
-		return;
-	}
-
-	char *cdg_name = new char[strlen(filename) + 4];
-	char *mp3_name = new char[strlen(filename) + 4];
 	handler = h;
-	sprintf(cdg_name, "%s.cdg", filename);
-	cdg_file = new CDGFileIO(cdg_name);
+	cdg_file = rdr;
 	if (cdg_file == NULL)
 		std::cerr << "Cannot open CDG file";
-	sprintf(mp3_name, "%s.mp3", filename);
-	ap = new AudioPlayer(mp3_name);
+	ap = player;
 	if (ap == NULL)
 		std::cerr << "Cannot play Audio\n";
 }
 
+CDGParser *CDGParser::GetParser(CDGScreenHandler *h, KaraokeAudio *player, CDGReader *rdr)
+{
+	return new MyCDGParser(h, player, rdr);
+}

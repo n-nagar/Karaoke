@@ -9,7 +9,7 @@ pkg_search_module(X11 REQUIRED glfw3)
 
 include_directories(/home/nnagar/git/FMOD/api/lowlevel/inc)
 
-add_executable(CDGParser CDGParser.cpp GraphicCDG.cpp)
+add_executable(CDGParser CDGParser.cpp GraphicCDG.cpp FMODAudio.cpp FileIO.cpp)
 
 target_link_libraries(CDGParser ${GLFW_STATIC_LIBRARIES})
 target_link_libraries(CDGParser fmod)
